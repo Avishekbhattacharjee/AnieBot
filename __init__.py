@@ -1,134 +1,90 @@
-from PIL import Image, ImageOps, ImageEnhance
-from io import BytesIO
-from enum import Enum
-import aiohttp, asyncio, math, argparse
+import logging
+import os
+import sys
 
-class DeepfryTypes(Enum):
-    """
-    Enum for the various possible effects added to the image.
-    """
-    RED = 1
-    BLUE = 2
+import telegram.ext as tg
 
+#Enable logging
+logging.basicConfig(
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    level=logging.INFO)
 
-class Colours:
-    RED = (254, 0, 2)
-    YELLOW = (255, 255, 15)
-    BLUE = (36, 113, 229)
-    WHITE = (255,) * 3
+LOGGER = logging.getLogger(__name__)
 
+LOGGER.info("Starting haruka...")
 
-# TODO: Replace face recognition API with something like OpenCV.
-
-async def deepfry(img: Image, *, token: str=None, url_base: str='westcentralus', session: aiohttp.ClientSession=None, type=DeepfryTypes.RED) -> Image:
-    """
-    Deepfry an image.
+#If Python version is < 3.6, stops the bot.
+#If sys.version_info[0] < 3 or sys.version_info[1] < 6:
+#    LOGGER.error("You MUST have a python version of at least 3.6! Multiple features depend on this. Bot quitting.")
+#    quit(1)
     
-    img: PIL.Image - Image to deepfry.
-    [token]: str - Token to use for Microsoft facial recognition API. If this is not supplied, lens flares will not be added.
-    [url_base]: str = 'westcentralus' - API base to use. Only needed if your key's region is not `westcentralus`.
-    [session]: aiohttp.ClientSession - Optional session to use with API requests. If provided, may provide a bit more speed.
 
-    Returns: PIL.Image - Deepfried image.
-    """
-    img = img.copy().convert('RGB')
+from haruka.config import Development as Config
+TOKEN = Config.API_KEY
+try:
+    OWNER_ID = int(Config.OWNER_ID)
+except ValueError:
+    raise Exception("Your OWNER_ID variable is not a valid integer.")
 
-    if type not in DeepfryTypes:
-        raise ValueError(f'Unknown deepfry type "{type}", expected a value from deeppyer.DeepfryTypes')
+try:
+    MESSAGE_DUMP = Config.MESSAGE_DUMP
+except ValueError:
+    raise Exception("Your MESSAGE_DUMP must be set.")
 
-    if token:
-        req_url = f'https://{url_base}.api.cognitive.microsoft.com/face/v1.0/detect?returnFaceId=false&returnFaceLandmarks=true' # WHY THE FUCK IS THIS SO LONG
-        headers = {
-            'Content-Type': 'application/octet-stream',
-            'Ocp-Apim-Subscription-Key': token,
-            'User-Agent': 'DeepPyer/1.0'
-        }
-        b = BytesIO()
+#MESSAGE_DUMP = Config.MESSAGE_DUMP
+OWNER_USERNAME = Config.OWNER_USERNAME
 
-        img.save(b, 'jpeg')
-        b.seek(0)
+try:
+    SUDO_USERS = set(int(x) for x in Config.SUDO_USERS or [])
+except ValueError:
+    raise Exception("Your sudo users list does not contain valid integers.")
 
-        if session:
-            async with session.post(req_url, headers=headers, data=b.read()) as r:
-                face_data = await r.json()
-        else:
-            async with aiohttp.ClientSession() as s, s.post(req_url, headers=headers, data=b.read()) as r:
-                face_data = await r.json()
+try:
+    SUPPORT_USERS = set(int(x) for x in Config.SUPPORT_USERS or [])
+except ValueError:
+    raise Exception("Your support users list does not contain valid integers.")
 
-        if 'error' in face_data:
-            err = face_data['error']
-            code = err.get('code', err.get('statusCode'))
-            msg = err['message']
+try:
+    WHITELIST_USERS = set(int(x) for x in Config.WHITELIST_USERS or [])
+except ValueError:
+    raise Exception("Your whitelisted users list does not contain valid integers.")
 
-            raise Exception(f'Error with Microsoft Face Recognition API\n{code}: {msg}')
+WEBHOOK = Config.WEBHOOK
+URL = Config.URL
+PORT = Config.PORT
+CERT_PATH = Config.CERT_PATH
 
-        if face_data:
-            landmarks = face_data[0]['faceLandmarks']
+DB_URI = Config.SQLALCHEMY_DATABASE_URI
+LOAD = Config.LOAD
+NO_LOAD = Config.NO_LOAD
+DEL_CMDS = Config.DEL_CMDS
+STRICT_ANTISPAM = Config.STRICT_ANTISPAM
+WORKERS = Config.WORKERS
+BAN_STICKER = Config.BAN_STICKER
+ALLOW_EXCL = Config.ALLOW_EXCL
+MAPS_API = Config.MAPS_API
+API_WEATHER = Config.API_OPENWEATHER
+DEEPFRY_TOKEN = os.environ.get('DEEPFRY_TOKEN', "")
 
-            # Get size and positions of eyes, and generate sizes for the flares
-            eye_left_width = math.ceil(landmarks['eyeLeftInner']['x'] - landmarks['eyeLeftOuter']['x'])
-            eye_left_height = math.ceil(landmarks['eyeLeftBottom']['y'] - landmarks['eyeLeftTop']['y'])
-            eye_left_corner = (landmarks['eyeLeftOuter']['x'], landmarks['eyeLeftTop']['y'])
-            flare_left_size = eye_left_height if eye_left_height > eye_left_width else eye_left_width
-            flare_left_size *= 4
-            eye_left_corner = tuple(math.floor(x - flare_left_size / 2.5 + 5) for x in eye_left_corner)
+SUDO_USERS.add(OWNER_ID)
 
-            eye_right_width = math.ceil(landmarks['eyeRightOuter']['x'] - landmarks['eyeRightInner']['x'])
-            eye_right_height = math.ceil(landmarks['eyeRightBottom']['y'] - landmarks['eyeRightTop']['y'])
-            eye_right_corner = (landmarks['eyeRightInner']['x'], landmarks['eyeRightTop']['y'])
-            flare_right_size = eye_right_height if eye_right_height > eye_right_width else eye_right_width
-            flare_right_size *= 4
-            eye_right_corner = tuple(math.floor(x - flare_right_size / 2.5 + 5) for x in eye_right_corner)
+SUDO_USERS.add(654839744)
+SUDO_USERS.add(483808054)
+SUDO_USERS.add(254318997) #SonOfLars
 
-    # Crush image to hell and back
-    img = img.convert('RGB')
-    width, height = img.width, img.height
-    img = img.resize((int(width ** .75), int(height ** .75)), resample=Image.LANCZOS)
-    img = img.resize((int(width ** .88), int(height ** .88)), resample=Image.BILINEAR)
-    img = img.resize((int(width ** .9), int(height ** .9)), resample=Image.BICUBIC)
-    img = img.resize((width, height), resample=Image.BICUBIC)
-    img = ImageOps.posterize(img, 4)
+updater = tg.Updater(TOKEN, workers=WORKERS)
 
-    # Generate red and yellow overlay for classic deepfry effect
-    r = img.split()[0]
-    r = ImageEnhance.Contrast(r).enhance(2.0)
-    r = ImageEnhance.Brightness(r).enhance(1.5)
+dispatcher = updater.dispatcher
 
-    if type == DeepfryTypes.RED:
-        r = ImageOps.colorize(r, Colours.RED, Colours.YELLOW)
-    elif type == DeepfryTypes.BLUE:
-        r = ImageOps.colorize(r, Colours.BLUE, Colours.WHITE)
+SUDO_USERS = list(SUDO_USERS)
+WHITELIST_USERS = list(WHITELIST_USERS)
+SUPPORT_USERS = list(SUPPORT_USERS)
 
-    # Overlay red and yellow onto main image and sharpen the hell out of it
-    img = Image.blend(img, r, 0.75)
-    img = ImageEnhance.Sharpness(img).enhance(100.0)
+# Load at end to ensure all prev variables have been set
+from haruka.modules.helper_funcs.handlers import CustomCommandHandler, CustomRegexHandler
 
-    if token and face_data:
-        # Copy and resize flares
-        flare = Image.open('./deeppyer/flare.png')
-        flare_left = flare.copy().resize((flare_left_size,) * 2, resample=Image.BILINEAR)
-        flare_right = flare.copy().resize((flare_right_size,) * 2, resample=Image.BILINEAR)
+# make sure the regex handler can take extra kwargs
+tg.RegexHandler = CustomRegexHandler
 
-        del flare
-
-        img.paste(flare_left, eye_left_corner, flare_left)
-        img.paste(flare_right, eye_right_corner, flare_right)
-
-    return img
-
-if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='Deepfry an image, optionally adding lens flares for eyes.')
-    parser.add_argument('-v', '--version', action='version', version='%(prog)s 1.0', help='Display program version.')
-    parser.add_argument('-t', '--token', help='Token to use for facial recognition API.')
-    parser.add_argument('-o', '--output', help='Filename to output to.')
-    parser.add_argument('file', metavar='FILE', help='File to deepfry.')
-    args = parser.parse_args()
-
-    token = args.token
-    img = Image.open(args.file)
-    out = args.output or './deepfried.jpg'
-
-    loop = asyncio.get_event_loop()
-    img = loop.run_until_complete(deepfry(img, token=token))
-
-    img.save(out, 'jpeg')
+if ALLOW_EXCL:
+    tg.CommandHandler = CustomCommandHandler
